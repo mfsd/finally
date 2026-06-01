@@ -160,7 +160,7 @@ Both the simulator and the Massive client implement the same abstract interface.
 ### Massive API (Optional)
 
 - REST API polling (not WebSocket) — simpler, works on all tiers
-- Polls for the union of all watched tickers on a configurable interval
+- Polls for the tracked set (watchlist ∪ held positions, see §6 SSE) on a configurable interval
 - Free tier (5 calls/min): poll every 15 seconds
 - Paid tiers: poll every 2-15 seconds depending on tier
 - Parses REST response into the same format as the simulator
@@ -179,7 +179,7 @@ Both the simulator and the Massive client implement the same abstract interface.
 
 - Endpoint: `GET /api/stream/prices`
 - Long-lived SSE connection; client uses native `EventSource` API
-- Server pushes price updates for all tickers known to the system at a regular cadence (~500ms) — in the single-user model this is equivalent to the user's watchlist
+- Server pushes price updates for all tickers known to the system at a regular cadence (~500ms). The tracked set is the **union of the watchlist and all held-position tickers** — so a position you hold but have removed from the watchlist still streams, keeping the header total, positions table, and P&L live
 - Each SSE event contains ticker, price, previous price, session-open price, timestamp, and change direction. The frontend computes daily change % as `(price - session_open) / session_open`
 - The server also emits a periodic comment/heartbeat (`: keepalive`, ~every 15s) so the client can detect a silently dropped connection (drives the red status dot — see §10)
 - Client handles reconnection automatically (EventSource has built-in retry)
@@ -283,7 +283,7 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 **Add-ticker behavior (`POST /api/watchlist`)**
 - Simulator mode: any well-formed symbol is accepted and immediately gets a deterministic seed price (§6).
 - Massive mode: the symbol is validated against the Snapshot endpoint; unknown symbols are rejected with `400`.
-- Removing a ticker you hold a position in is allowed — the position is unaffected, it simply stops being shown in the watchlist (it remains in the positions table).
+- Removing a ticker you hold a position in is allowed — the position is unaffected, it simply stops being shown in the watchlist (it remains in the positions table). Its price keeps streaming because the tracked set is the union of the watchlist and held positions (§6), so the position's live value stays current.
 
 ### Chat
 | Method | Path | Description |
@@ -310,7 +310,7 @@ When the user sends a chat message, the backend:
 1. Loads the user's current portfolio context (cash, positions with P&L, watchlist with live prices, total portfolio value)
 2. Loads recent conversation history from the `chat_messages` table — capped at the last 20 messages to bound prompt size and cost
 3. Constructs a prompt with a system message, portfolio context, conversation history, and the user's new message
-4. Calls the LLM via LiteLLM → OpenRouter, requesting structured output, using the cerebras-inference skill
+4. Calls the LLM via LiteLLM → OpenRouter, requesting structured output, using the `cerebras` skill
 5. Parses the complete structured JSON response
 6. Auto-executes any trades or watchlist changes specified in the response
 7. Stores the message and executed actions in `chat_messages`
@@ -371,20 +371,24 @@ When `LLM_MOCK=true`, the backend returns deterministic mock responses instead o
 The frontend is a single-page application with a dense, terminal-inspired layout. The specific component architecture and layout system is up to the Frontend Engineer, but the UI should include these elements:
 
 - **Watchlist panel** — grid/table of watched tickers with: ticker symbol, current price (flashing green/red on change), daily change %, and a sparkline mini-chart (accumulated from SSE since page load)
-- **Main chart area** — larger chart for the currently selected ticker, with at minimum price over time. Clicking a ticker in the watchlist selects it here.
+- **Main chart area** — larger chart for the currently selected ticker, showing price over time. Like the sparklines, this is built from the SSE buffer accumulated since page load (no historical/OHLC backfill exists in the system) — it's a larger view of the same data, not a deeper history. Clicking a ticker in the watchlist selects it here.
 - **Portfolio heatmap** — treemap visualization where each rectangle is a position, sized by portfolio weight, colored by P&L (green = profit, red = loss)
 - **P&L chart** — line chart showing total portfolio value over time, using data from `portfolio_snapshots`
 - **Positions table** — tabular view of all positions: ticker, quantity, avg cost, current price, unrealized P&L, % change
 - **Trade bar** — simple input area: ticker field, quantity field, buy button, sell button. Market orders, instant fill.
 - **AI chat panel** — docked/collapsible sidebar. Message input, scrolling conversation history, loading indicator while waiting for LLM response. Trade executions and watchlist changes shown inline as confirmations.
-- **Header** — portfolio total value (updating live), connection status indicator, cash balance
+- **Header** — portfolio total value (updating live), connection status indicator, cash balance. The live total value is recomputed client-side from current positions × the latest streamed prices (no polling); `portfolio_snapshots` remains the periodic server-side record that feeds the P&L chart.
 
 ### Technical Notes
 
 - Use `EventSource` for SSE connection to `/api/stream/prices`
-- Canvas-based charting library preferred (Lightweight Charts or Recharts) for performance
+- **Charting libraries (fixed choices):** **TradingView Lightweight Charts** (`lightweight-charts`) for the sparklines, main chart, and P&L line chart (canvas-based, fast, authentic terminal look); **Nivo treemap** (`@nivo/treemap`) for the portfolio heatmap. Use these unless there's a documented reason to deviate.
+- **Connection status dot** (green/yellow/red), derived from `EventSource`:
+  - **Green** = connection open (`onopen` fired / `readyState === OPEN`) and heartbeats arriving
+  - **Yellow** = reconnecting — `onerror` fired with `readyState === CONNECTING` (the browser's built-in retry is in progress)
+  - **Red** = `readyState === CLOSED`, or no message/heartbeat received within a timeout window (~2× the 15s keepalive interval)
 - Price flash effect: on receiving a new price, briefly apply a CSS class with background color transition, then remove it
-- All API calls go to the same origin (`/api/*`) — no CORS configuration needed
+- All API calls go to the same origin (`/api/*`) — no CORS configuration needed **in production** (FastAPI serves the static export). **In development**, run the Next.js dev server and configure `next.config` `rewrites` to proxy `/api/*` → `http://localhost:8000`, preserving the same-origin assumption (no backend CORS needed).
 - Tailwind CSS for styling with a custom dark theme
 
 ---
@@ -472,59 +476,3 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 - Portfolio visualization: heatmap renders with correct colors, P&L chart has data points
 - AI chat (mocked): send a message, receive a response, trade execution appears inline
 - SSE resilience: disconnect and verify reconnection
-
----
-
-## 13. Review Notes — Questions, Clarifications & Simplifications
-
-> Added 2026-06-01 during documentation review. Items below are gaps, ambiguities, or simplification opportunities for the agents to resolve before/while building. Nothing here changes the vision; it sharpens the contract.
-
-### A. Genuine Gaps (likely to block an agent)
-
-1. **Seed price for arbitrary tickers (simulator).** Section 6 lists seed prices only for the 10 defaults. When a user (or the AI) adds an unlisted ticker like `PYPL`, the simulator has no seed. **Decision needed:** pick a default seed (e.g., random in $50–$300, or a small hardcoded lookup) and document it. Without this, "add ticker → see a price" breaks in simulator mode.
-
-2. **"Daily change %" has no baseline.** The watchlist (§2, §10) and positions table show a daily/percent change, but the SSE event only carries `previous price` (the last tick). There is no "session open" or "previous close" stored anywhere. **Decision needed:** define the baseline — e.g., first price observed at page load (frontend-derived, resets on refresh) vs. a server-side session-open captured when the price cache initializes. These produce very different numbers; pick one and state it.
-
-3. **Tradeable universe vs. watchlist.** Can the user (or AI) trade a ticker that isn't on the watchlist? The trade bar (§10) has a free ticker field, and the AI may buy something new. If yes, the price cache must include it (and adding to positions should probably auto-add to the watchlist). **Decision needed:** state whether a trade implicitly adds the ticker to the watchlist/price cache, or whether trades are restricted to watched tickers.
-
-4. **Dev-mode CORS / run story.** §10 says "no CORS configuration needed" — true only for the production static-export path where FastAPI serves the frontend. During development, agents will likely run the Next.js dev server (port 3000) against the backend (port 8000), which **does** need CORS or a dev proxy. **Decision needed:** document the dev workflow (Next `rewrites` proxy to `:8000` is the cleanest, keeps same-origin assumption everywhere).
-
-5. **Main chart history.** Sparklines are explicitly "since page load." The main detailed chart (§10) says "price over time" but there is no historical price storage anywhere in the schema. So the main chart is also limited to since-page-load data. **Clarify:** confirm the main chart is just a larger view of the same accumulated buffer (no historical OHLC), so no one expects backfilled history.
-
-### B. Clarifications (won't block, but ambiguous)
-
-6. **Position removal at zero quantity.** §12 says a sold-out position "updates or disappears." Confirm the rule: delete the `positions` row when quantity reaches ~0 (with a float epsilon, since fractional shares + floats won't hit exact 0).
-
-7. **Realized P&L.** Only *unrealized* P&L is modeled. Selling at a gain/loss produces realized P&L that is currently dropped (only the `trades` log remains). Confirm this is intentionally out of scope (the portfolio value chart still captures the net effect via cash).
-
-8. **Live portfolio value computation.** The header value "updates live" as prices stream. Confirm the frontend recomputes total value client-side from positions × streamed prices (cleanest, no polling), rather than polling `/api/portfolio`. `portfolio_snapshots` then remains the periodic server-side record for the P&L chart.
-
-9. **Chat history window.** §9 step 2 loads "recent conversation history." Define a concrete cap (e.g., last 20 messages or last N tokens) to bound the prompt and cost.
-
-10. **Connection status three-state.** `EventSource` exposes only `onopen`/`onerror` and an internal readyState; there's no explicit "reconnecting" event. Clarify how green/yellow/red map (e.g., yellow = `onerror` fired with `readyState===CONNECTING`, red = a manual heartbeat timeout).
-
-11. **Structured output support for `gpt-oss-120b` via Cerebras.** Confirm this model+provider honors JSON-schema structured outputs through LiteLLM/OpenRouter. If not guaranteed, document the fallback (prompt-enforced JSON + tolerant parsing). The skill is referenced as **`cerebras-inference`** in §9 but the available skill is named **`cerebras`** — reconcile the name.
-
-12. **`portfolio_snapshots` retention.** A row every 30s is ~2,880/day, unbounded. Confirm whether the P&L chart reads all rows or a window, and whether old rows are pruned/downsampled.
-
-13. Important: Simplify LLM response flow. do not stream, just return. 
-
-### C. Simplification Opportunities
-
-1.  **Pick one charting library up front.** §10 offers "Lightweight Charts or Recharts." Neither does treemaps well, so the heatmap needs a third library regardless (e.g., d3/Nivo treemap) — which is currently **unspecified** (a small gap). Recommendation: name the exact two libraries (one for line/sparkline charts, one for the treemap) to avoid divergent agent choices.
-
-    **DECISION (documented):**
-    - **TradingView Lightweight Charts** (`lightweight-charts`) — for the watchlist sparklines, the main detailed chart, and the P&L line chart. Canvas-based, fast, and gives the authentic trading-terminal look §2 calls for.
-    - **Nivo treemap** (`@nivo/treemap`) — for the portfolio heatmap (rectangles sized by weight, colored by P&L). Purpose-built for treemaps, themeable to the dark palette.
-
-    Two libraries total. Frontend agents should use these unless they document a specific reason to deviate.
-
-
-### D. Nits
-
-- §5 calls the optional source "Massive (Polygon.io)" but §6 just says "Massive API." Confirm Massive is a Polygon-compatible endpoint and document the exact REST response shape the parser targets.
-
-    **CHECKED (2026-06-01):** Massive's published REST endpoints — `Last Trade`, single-ticker `Snapshot`, and full-market "snapshot of the entire U.S." across stocks/options/crypto — mirror Polygon.io's API surface verbatim, so Massive is effectively a Polygon-compatible API. However, neither the marketing site nor the docs index *states* the relationship outright, and the docs index doesn't expose the base URL/auth scheme. **Still to confirm during build with a live key:** exact base URL, auth header format, and the precise JSON shape returned (the parser should target the Snapshot endpoint and tolerate field differences). Treat Polygon's schema as the working assumption.
-
-- Invalid/unknown ticker on `POST /api/watchlist` — define behavior (reject with 400 vs. accept and let it stream a simulated price). Ties to gap #1.
-- `POST /api/portfolio/trade` when the ticker has no cached price yet (just added, no tick) — define the response (reject vs. wait for first tick).
