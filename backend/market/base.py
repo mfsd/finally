@@ -6,9 +6,10 @@ class MarketDataProvider(ABC):
     """Source of latest prices for a dynamic set of tickers."""
 
     @abstractmethod
-    async def get_prices(self, tickers: Iterable[str]) -> dict[str, float]:
-        """Latest price per ticker. Tickers with no available price are OMITTED
-        from the returned dict (a missing key means 'no price yet')."""
+    async def get_prices(self, tickers: Iterable[str]) -> dict[str, tuple[float, float]]:
+        """Latest (price, ts) per ticker, where ts is epoch seconds.
+        Tickers with no available price are OMITTED from the returned dict
+        (a missing key means 'no price yet')."""
 
     @abstractmethod
     def seed_price(self, ticker: str) -> float | None:

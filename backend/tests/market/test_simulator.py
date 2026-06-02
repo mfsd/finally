@@ -25,8 +25,9 @@ async def test_get_prices_returns_all_tickers(sim):
 async def test_get_prices_all_positive(sim):
     tickers = ["AAPL", "TSLA", "NVDA"]
     prices = await sim.get_prices(tickers)
-    for ticker, price in prices.items():
+    for ticker, (price, ts) in prices.items():
         assert price > 0, f"{ticker} has non-positive price: {price}"
+        assert ts > 0, f"{ticker} has non-positive timestamp: {ts}"
 
 
 @pytest.mark.asyncio
@@ -82,4 +83,4 @@ async def test_prices_change_between_calls(sim):
     p1 = await sim.get_prices(tickers)
     p2 = await sim.get_prices(tickers)
     # Prices should differ (with overwhelming probability using non-zero vol)
-    assert p1["AAPL"] != p2["AAPL"]
+    assert p1["AAPL"][0] != p2["AAPL"][0]

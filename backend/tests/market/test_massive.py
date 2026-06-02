@@ -119,9 +119,13 @@ async def test_get_prices_returns_all_present_tickers(provider):
         await provider.aclose()
 
     assert "AAPL" in prices
-    assert prices["AAPL"] == 183.12
+    price_aapl, ts_aapl = prices["AAPL"]
+    assert price_aapl == 183.12
+    assert ts_aapl > 0   # resolved from lastTrade.t nanoseconds
     assert "TSLA" in prices
-    assert prices["TSLA"] == 242.55
+    price_tsla, ts_tsla = prices["TSLA"]
+    assert price_tsla == 242.55
+    assert ts_tsla > 0   # resolved from min.t milliseconds
 
 
 @pytest.mark.asyncio

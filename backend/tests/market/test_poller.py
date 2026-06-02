@@ -22,10 +22,10 @@ class FakeProvider(MarketDataProvider):
     async def aclose(self) -> None:
         self.closed = True
 
-    async def get_prices(self, tickers: Iterable[str]) -> dict[str, float]:
+    async def get_prices(self, tickers: Iterable[str]) -> dict[str, tuple[float, float]]:
         idx = min(self._call_count, len(self._sequence) - 1)
         self._call_count += 1
-        return {k: v for k, v in self._sequence[idx].items() if k in set(tickers)}
+        return {k: (v, 0.0) for k, v in self._sequence[idx].items() if k in set(tickers)}
 
     def seed_price(self, ticker: str) -> float | None:
         return None
@@ -40,7 +40,7 @@ class ErrorProvider(MarketDataProvider):
     def __init__(self, error: Exception) -> None:
         self._error = error
 
-    async def get_prices(self, tickers: Iterable[str]) -> dict[str, float]:
+    async def get_prices(self, tickers: Iterable[str]) -> dict[str, tuple[float, float]]:
         raise self._error
 
     def seed_price(self, ticker: str) -> float | None:
@@ -131,7 +131,7 @@ async def test_poller_survives_provider_exception():
             call_count += 1
             if call_count == 1:
                 raise RuntimeError("transient network error")
-            return {"AAPL": 190.0}
+            return {"AAPL": (190.0, 0.0)}
 
         def seed_price(self, ticker):
             return None

@@ -49,8 +49,8 @@ class MarketPoller:
                 tickers = self._tracked_set()
                 if tickers:
                     prices = await self._provider.get_prices(tickers)
-                    for ticker, price in prices.items():
-                        self._cache.update(ticker, price)
+                    for ticker, (price, ts) in prices.items():
+                        self._cache.update(ticker, price, ts=ts)
             except Exception:
                 log.exception("market poll failed")
             await asyncio.sleep(self._interval)
