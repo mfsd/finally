@@ -5,8 +5,8 @@ from dataclasses import dataclass
 
 from .seeds import seed_price
 
-EVENT_PROB_PER_STEP = 0.01
-EVENT_MIN, EVENT_MAX = 0.02, 0.05
+EVENT_PROB_PER_STEP = 0.003
+EVENT_MIN, EVENT_MAX = 0.005, 0.02
 
 
 @dataclass
@@ -26,8 +26,9 @@ class SimEngine:
     RNG so paths differ run-to-run while starting prices stay stable.
     """
 
-    # dt tuned for visual pacing, not literal calendar time.
-    DT = 0.5 / (252 * 6.5 * 3600)
+    # dt tuned for visual pacing: at vol=0.3 this gives ~0.08% per 500ms step,
+    # landing in the 0.05-0.15% target band from MARKET_SIMULATOR.md §6.
+    DT = 7.111e-6
 
     def __init__(self, rng: random.Random | None = None) -> None:
         self._rng = rng or random.Random()
@@ -53,7 +54,8 @@ class SimEngine:
         sector_beta = 0.3 if sector == "tech" else 0.15
         vol = 0.20 + 0.40 * unit(9)
         drift = 0.00 + 0.10 * (unit(10) - 0.5)
-        resid = max(0.2, math.sqrt(max(0.0, 1 - 0.25 * beta**2 - sector_beta**2)))
+        # resid chosen so var(z) = beta² + sector_beta² + resid² ≈ 1.
+        resid = max(0.2, math.sqrt(max(0.0, 1.0 - beta**2 - sector_beta**2)))
         return TickerParams(drift, vol, beta, sector, sector_beta, resid)
 
     def step(self, tickers: set[str]) -> dict[str, float]:

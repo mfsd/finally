@@ -31,7 +31,7 @@ def test_to_event_shape():
 
 def test_to_event_rounds_to_4_decimal_places():
     q = Quote("X", price=1.23456789, prev_price=1.0, session_open=1.0, ts=0.0)
-    assert event := q.to_event()
+    assert (event := q.to_event())
     assert event["price"] == 1.2346
 
 

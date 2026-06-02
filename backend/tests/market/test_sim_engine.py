@@ -126,7 +126,8 @@ def test_same_sector_tickers_positively_correlated():
 
 def test_event_always_fires_when_prob_forced_to_1():
     """With all RNG outputs fixed to 0.0, the event always fires and produces
-    a 2-5% move on exactly one ticker. GBM noise is negligible at vol=0.0001."""
+    an EVENT_MIN–EVENT_MAX move on exactly one ticker. GBM noise is negligible
+    at vol=0.0001."""
     tickers = {"AAPL", "GOOGL", "TSLA"}
     from market.sim_engine import TickerParams
 
@@ -144,10 +145,12 @@ def test_event_always_fires_when_prob_forced_to_1():
     before = {t: engine._price[t] for t in tickers}
     result = engine.step(tickers)
 
+    # Detection threshold: just below EVENT_MIN so any valid event is caught.
+    threshold = EVENT_MIN * 0.9
     large_moves = []
     for t in tickers:
         pct_change = abs(result[t] / before[t] - 1)
-        if pct_change > 0.015:
+        if pct_change > threshold:
             large_moves.append((t, pct_change))
 
     assert len(large_moves) == 1, f"Expected exactly 1 event ticker, got {large_moves}"
