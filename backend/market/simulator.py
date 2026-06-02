@@ -1,3 +1,4 @@
+import time
 from collections.abc import Iterable
 
 from .base import MarketDataProvider
@@ -14,8 +15,9 @@ class SimulatorMarketData(MarketDataProvider):
     def __init__(self) -> None:
         self._engine = SimEngine()
 
-    async def get_prices(self, tickers: Iterable[str]) -> dict[str, float]:
-        return self._engine.step(set(tickers))
+    async def get_prices(self, tickers: Iterable[str]) -> dict[str, tuple[float, float]]:
+        ts = time.time()
+        return {ticker: (price, ts) for ticker, price in self._engine.step(set(tickers)).items()}
 
     def seed_price(self, ticker: str) -> float | None:
         return self._engine.ensure_seeded(ticker)

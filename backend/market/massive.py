@@ -30,27 +30,27 @@ class MassiveMarketData(MarketDataProvider):
             await self._client.aclose()
             self._client = None
 
-    async def get_prices(self, tickers: Iterable[str]) -> dict[str, float]:
+    async def get_prices(self, tickers: Iterable[str]) -> dict[str, tuple[float, float]]:
         symbols = ",".join(sorted(set(tickers)))
         if not symbols:
             return {}
         assert self._client is not None, "call start() before get_prices()"
         resp = await self._client.get(SNAPSHOT_PATH, params={"tickers": symbols})
         resp.raise_for_status()
-        out: dict[str, float] = {}
+        out: dict[str, tuple[float, float]] = {}
         for row in resp.json().get("tickers", []):
             sym = row.get("ticker")
             price = _resolve_price(row)
             if sym and price is not None:
-                out[sym] = price
+                out[sym] = (price, _resolve_ts(row))
         return out
 
     def seed_price(self, ticker: str) -> float | None:
         return None
 
     async def validate_ticker(self, ticker: str) -> bool:
-        prices = await self.get_prices([ticker])
-        return ticker in prices
+        result = await self.get_prices([ticker])
+        return ticker in result
 
 
 def _resolve_price(row: dict) -> float | None:

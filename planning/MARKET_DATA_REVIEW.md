@@ -2,24 +2,21 @@
 
 **Reviewer:** automated code review (Claude)
 **Date:** 2026-06-02
-**Scope:** `backend/market/*` and `backend/tests/market/*` as of `main` @ `0b86aaa`
-(PR #4, "feat: build complete market data backend").
-**Reference specs:** `PLAN.md` §6/§8/§12, `MARKET_INTERFACE.md`, `MARKET_SIMULATOR.md`,
+**Scope:** `backend/market/*`, `backend/tests/market/*`, `backend/app.py`, `backend/db.py`,
+`backend/routes/*`, `backend/tests/test_app.py` as of `main` @ `0b86aaa`
+(PR #4, "feat: build complete market data backend") plus fixes applied in this review.
+**Reference specs:** `PLAN.md` §6/§7/§8/§12, `MARKET_INTERFACE.md`, `MARKET_SIMULATOR.md`,
 `MASSIVE_API.md`, `MARKET_DATA_DESIGN.md`.
 
 ---
 
 ## 1. Verdict
 
-**All issues resolved. Final test run: 102 passed, 0 failed.**
+**All issues resolved. Final test run: 117 passed, 0 failed.**
 
-The implementation is a faithful, clean realization of the design docs. The unified
-`MarketDataProvider` seam, `PriceCache` bookkeeping, single `MarketPoller`, env-driven factory,
-and both the simulator and Massive adapters are all present and match the documented contracts.
-
-Four defects were found and fixed in this review pass. One remaining item (Massive trade
-timestamps not threaded to the cache) is documented below as a known limitation requiring a
-future interface change, not a hotfix.
+The market-data layer is complete and all originally-identified defects have been fixed. The
+FastAPI app wiring, SSE route, and database initialization have been implemented. The
+`MarketDataProvider` interface now threads real timestamps from both providers to the cache.
 
 ---
 
@@ -42,7 +39,8 @@ of the *entire* suite — all other test results were hidden.
 ---
 
 ### 2.2 High — simulator correlation statistically zero; test failing
-**Status: FIXED** — `sim_engine.py` recalibrated; `test_same_sector_tickers_positively_correlated` now passes (corr = 0.691 > 0.3 threshold).
+**Status: FIXED** — `sim_engine.py` recalibrated; `test_same_sector_tickers_positively_correlated`
+now passes (corr = 0.691 > 0.3 threshold).
 
 **Root cause:** Two compounding problems:
 
@@ -51,7 +49,7 @@ of the *entire* suite — all other test results were hidden.
    (`MARKET_SIMULATOR.md` §6).
 
 2. **Events dominated variance by ~870×.** With GBM variance ~`σ²·DT ≈ 1e-8` and event
-   magnitude ~`(0.035)² ≈ 1.2e-3` at 1% probability per step, event variance overwhelmed the
+   magnitude ~`(0.035)²` at 1% probability per step, event variance overwhelmed the
    correlated GBM signal. Result: measured inter-ticker correlation ≈ 0.000 regardless of the
    (correct) shared-market-factor z-shock structure.
 
@@ -62,9 +60,8 @@ of the *entire* suite — all other test results were hidden.
 # At vol=0.3, sigma*sqrt(DT) = 0.08% — on-target per MARKET_SIMULATOR.md §6.
 DT = 7.111e-6   # was: 0.5 / (252 * 6.5 * 3600)
 
-# Events: reduced probability from 1% to 0.3% (fires ~every 3 min not every 5s),
-# and reduced magnitude from 2-5% to 0.5-2% so events remain dramatic but don't
-# swamp the correlated GBM signal.
+# Events: reduced probability 1% → 0.3% (fires ~every 3 min not every 5s),
+# and reduced magnitude 2–5% → 0.5–2% so GBM correlation dominates.
 EVENT_PROB_PER_STEP = 0.003   # was: 0.01
 EVENT_MIN, EVENT_MAX = 0.005, 0.02   # was: 0.02, 0.05
 ```
@@ -87,9 +84,8 @@ Per-step motion at new calibration:
 packages = ["market"]
 ```
 
-Without this, hatchling could not locate the `finally_backend` package (derived from project
-name `finally-backend`), so `uv sync`, `uv run pytest`, and the Docker `uv sync` stage all
-failed.
+Without this, hatchling could not locate the `finally_backend` package, so `uv sync`,
+`uv run pytest`, and the Docker `uv sync` stage all failed.
 
 ---
 
@@ -97,53 +93,117 @@ failed.
 **Status: FIXED**
 
 ```python
-# Before: incorrect — included a spurious 0.25 factor; var(z) ≠ 1.
+# Before: incorrect 0.25 factor; var(z) ≠ 1.
 resid = max(0.2, math.sqrt(max(0.0, 1 - 0.25 * beta**2 - sector_beta**2)))
 
-# After: correct — var(z) = beta² + sector_beta² + resid² = 1.000.
+# After: correct; var(z) = beta² + sector_beta² + resid² = 1.000.
 resid = max(0.2, math.sqrt(max(0.0, 1.0 - beta**2 - sector_beta**2)))
 ```
-
-Verified: for AAPL at new calibration, `beta²+sector_beta²+resid² = 1.000`.
 
 ---
 
 ### 2.5 Low — events test threshold hardcoded to old event magnitude
-**Status: FIXED** — `test_event_always_fires_when_prob_forced_to_1` used a hardcoded
-`> 0.015` threshold that was below the new `EVENT_MIN = 0.005` when the RNG returns 0.0 for
-all calls. Updated to use a threshold of `EVENT_MIN * 0.9` so it tracks the constant rather
-than an independent literal.
+**Status: FIXED** — updated to `EVENT_MIN * 0.9` so it tracks the constant.
 
 ---
 
-## 3. Known Limitation (no fix in this pass)
+### 2.6 Medium — Massive trade timestamps discarded; `_resolve_ts` unused in live path
+**Status: FIXED** — `MarketDataProvider.get_prices` return type changed from `dict[str, float]`
+to `dict[str, tuple[float, float]]` (price, ts). Both providers and the poller updated.
 
-### 3.1 Massive trade timestamps not threaded to the cache
-**Status: OPEN — requires interface change**
+**Interface change:**
 
-`MassiveMarketData.get_prices` returns `dict[str, float]` per the `MarketDataProvider` ABC.
-The `_resolve_ts` helper correctly normalizes nanosecond/millisecond timestamps from the API
-response, but since the return type carries only the price, `_resolve_ts` is unused in the
-live path. The `MarketPoller` calls `cache.update(ticker, price)` without `ts`, so
-`Quote.ts` records server receive time rather than the trade's SIP timestamp.
+```python
+# base.py — before
+async def get_prices(self, tickers) -> dict[str, float]: ...
 
-Fixing this properly requires changing the ABC return type (e.g. to
-`dict[str, tuple[float, float]]`) and updating both providers and the poller. That is
-deferred to the app-wiring phase (§3.2 below) where the full call chain is assembled.
-`_resolve_ts` remains in `massive.py` as tested, correct utility code ready to be wired in.
+# base.py — after
+async def get_prices(self, tickers) -> dict[str, tuple[float, float]]:
+    """Latest (price, ts_epoch_seconds) per ticker."""
+```
 
-### 3.2 No FastAPI app or SSE route exists yet
-**Status: OPEN — out of scope for this PR**
+**Simulator** (`simulator.py`) — uses `time.time()` as ts (prices are generated in real-time):
 
-`backend/` contains only `market/`, `tests/`, and `pyproject.toml`. No `app.py`, no
-`/api/stream/prices` route, no lifespan wiring. The market layer is fully unit-tested in
-isolation but is not yet served. The app wiring — FastAPI lifespan, seeding the tracked set
-from `get_tracked_symbols(db)`, mounting `price_event_stream` — is the next implementation
-milestone per PLAN §8.
+```python
+async def get_prices(self, tickers) -> dict[str, tuple[float, float]]:
+    ts = time.time()
+    return {ticker: (price, ts)
+            for ticker, price in self._engine.step(set(tickers)).items()}
+```
+
+**Massive** (`massive.py`) — uses `_resolve_ts(row)` which correctly normalizes
+`lastTrade.t` (nanoseconds) and `min.t` (milliseconds) to epoch seconds:
+
+```python
+out[sym] = (price, _resolve_ts(row))
+```
+
+**Poller** (`poller.py`) — unpacks the tuple and passes ts to `cache.update`:
+
+```python
+for ticker, (price, ts) in prices.items():
+    self._cache.update(ticker, price, ts=ts)
+```
+
+`Quote.ts` now reflects the actual trade timestamp from the Massive API (or server receive
+time from the simulator) rather than always being the server receive time.
 
 ---
 
-## 4. Test Run Summary
+### 2.7 Medium — No FastAPI app or SSE route existed
+**Status: FIXED** — implemented `backend/app.py`, `backend/db.py`, `backend/routes/stream.py`,
+`backend/routes/health.py`, and `backend/tests/test_app.py`.
+
+#### `backend/db.py`
+Full schema (all six tables from PLAN §7: `users_profile`, `watchlist`, `positions`, `trades`,
+`portfolio_snapshots`, `chat_messages`) with lazy idempotent initialization and seeding of the
+default user (10 000 cash) and the 10 default watchlist tickers. DB path is configurable via
+`DB_PATH` env var (defaults to `db/finally.db`).
+
+#### `backend/app.py`
+FastAPI lifespan that:
+1. Opens and initializes the SQLite database.
+2. Builds the `PriceCache` and selects the provider via `make_provider()`.
+3. Synchronously seeds the current tracked set (sim mode: immediate prices; Massive: no-op).
+4. Starts `MarketPoller` with `get_tracked_symbols(db)` as the dynamic tracked-set callable.
+5. Mounts the static Next.js export if the `static/` directory is present (Docker build).
+6. Cleans up on shutdown: stops the poller, closes the DB.
+
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db = get_connection()
+    init_db(db)
+    cache = PriceCache()
+    provider, interval = make_provider()
+    tracked = lambda: get_tracked_symbols(db)
+    for ticker in tracked():
+        seed = provider.seed_price(ticker)
+        if seed is not None:
+            cache.seed(ticker, seed)
+    poller = MarketPoller(provider, cache, tracked_set=tracked, interval=interval)
+    app.state.price_cache = cache
+    app.state.market_provider = provider
+    app.state.db = db
+    await poller.start()
+    try:
+        yield
+    finally:
+        await poller.stop()
+        db.close()
+```
+
+#### `backend/routes/stream.py` — `GET /api/stream/prices`
+Reads `request.app.state.price_cache` and returns a `StreamingResponse` from
+`price_event_stream(cache)` with the correct SSE headers (`Cache-Control: no-cache`,
+`X-Accel-Buffering: no`).
+
+#### `backend/routes/health.py` — `GET /api/health`
+Returns `{"status": "ok"}` for Docker/deployment health probes.
+
+---
+
+## 3. Test Run Summary
 
 ### Before fixes (as committed in PR #4)
 
@@ -160,42 +220,66 @@ With --continue-on-collection-errors:
 ### After fixes (this branch)
 
 ```
-102 passed in 1.28s
+117 passed in 1.69s
 ```
 
-All 102 tests collect and pass, including the previously failing correlation test.
+Test count breakdown:
+
+| File | Tests |
+|---|---|
+| `test_cache.py` | 12 |
+| `test_factory.py` | 6 |
+| `test_massive.py` | 20 |
+| `test_poller.py` | 9 |
+| `test_seeds.py` | 7 |
+| `test_sim_engine.py` | 11 |
+| `test_simulator.py` | 12 |
+| `test_stream.py` | 7 |
+| `test_tracked.py` | 8 |
+| `test_types.py` | 6 |
+| `test_app.py` (new) | **15** |
+| **Total** | **117** |
+
+The 15 new `test_app.py` tests cover:
+- `/api/health` status code and response body
+- `/api/stream/prices` status code, content-type, cache-control header
+- SSE frame format (double newline termination)
+- SSE payload shape: valid JSON list, correct tickers, required fields
+  (`ticker`, `price`, `session_open`, `direction`, `ts`, `prev_price`)
+- Multiple frames emitted
+- `db.init_db`: all 6 tables created, default user seeded at $10 000, default watchlist
+  seeded with all 10 tickers, idempotency (calling twice does not duplicate rows)
 
 ---
 
-## 5. What Was Correct in the Original Implementation
-
-- **`PriceCache`** — session-open-set-once, prev-price roll, direction, snapshot copy
-  semantics, `seed` no-op-when-present: correct and thoroughly tested (12 cases).
-- **`seeds.py`** — deterministic SHA-256 hashing into $50–$300 band, table override,
-  cross-process determinism: correct.
-- **`MassiveMarketData`** — single-request filtered snapshot, tolerant `lastTrade.p → min.c →
-  day.c` fallback, omission of unknown symbols, Bearer auth, ticker deduplication,
-  `raise_for_status`, idempotent `aclose`: all correct and well covered by `respx` fixtures.
-- **`MarketPoller`** — dynamic tracked-set recomputed per poll, empty-set short-circuit,
-  exception isolation (loop survives transient errors), clean task cancellation/`aclose` on
-  stop: correct.
-- **`get_tracked_symbols`** — union (watchlist ∪ positions), user-id filtering, held-but-
-  unwatched invariant: correct and explicitly tested.
-- **`price_event_stream`** — correct SSE framing, heartbeat cadence, empty-cache skip,
-  parameterized intervals for fast tests: correct.
-- **Provider contract** — both providers subclass `MarketDataProvider`; `seed_price` never-None
-  (sim) / always-None (Massive) honored and asserted.
-- **SimEngine z-shock structure** — the shared-market-factor + sector-factor correlation
-  model was *always* generating correctly correlated z-shocks (corr ≈ 0.81); only the GBM
-  step-size miscalibration was preventing it from showing up in price returns.
-
----
-
-## 6. Files Changed in This Review Pass
+## 4. Files Changed
 
 | File | Change |
 |---|---|
+| `backend/market/base.py` | `get_prices` return type `dict[str, float]` → `dict[str, tuple[float, float]]` |
+| `backend/market/simulator.py` | Returns `(price, time.time())` tuples; added `import time` |
+| `backend/market/massive.py` | Returns `(price, _resolve_ts(row))` tuples; `validate_ticker` uses renamed var |
+| `backend/market/poller.py` | Unpacks `(price, ts)` and passes `ts` to `cache.update` |
 | `backend/market/sim_engine.py` | DT raised 84×; EVENT_PROB/MIN/MAX recalibrated; `resid` formula corrected |
 | `backend/pyproject.toml` | Added `[tool.hatch.build.targets.wheel] packages = ["market"]` |
-| `backend/tests/market/test_types.py` | Parenthesized walrus in `assert (event := ...)` |
-| `backend/tests/market/test_sim_engine.py` | Event detection threshold now `EVENT_MIN * 0.9` |
+| `backend/db.py` | **New** — full schema, seed, `get_connection`, `init_db` |
+| `backend/app.py` | **New** — FastAPI app with lifespan wiring |
+| `backend/routes/__init__.py` | **New** — routes package |
+| `backend/routes/stream.py` | **New** — `GET /api/stream/prices` SSE endpoint |
+| `backend/routes/health.py` | **New** — `GET /api/health` endpoint |
+| `backend/tests/market/test_poller.py` | `FakeProvider.get_prices` returns `(price, ts)` tuples |
+| `backend/tests/market/test_massive.py` | Price assertions use `prices[sym][0]`; added ts assertions |
+| `backend/tests/market/test_simulator.py` | Unpacks `(price, ts)` in assertions |
+| `backend/tests/market/test_sim_engine.py` | Event detection threshold `EVENT_MIN * 0.9` |
+| `backend/tests/market/test_types.py` | Parenthesized walrus |
+| `backend/tests/test_app.py` | **New** — 15 app/route/db integration tests |
+
+---
+
+## 5. What Remains (next milestone)
+
+The portfolio routes (`GET /api/portfolio`, `POST /api/portfolio/trade`,
+`GET /api/portfolio/history`), watchlist routes (`GET/POST /api/watchlist`,
+`DELETE /api/watchlist/{ticker}`), the AI chat route (`POST /api/chat`), portfolio snapshot
+background task, and the full frontend are the remaining implementation work per PLAN §8–§10.
+The market layer is complete and provides a solid foundation for all of these.
