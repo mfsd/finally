@@ -3,5 +3,24 @@
     "frontend-design@claude-plugins-official": true,
     "context7@claude-plugins-official": true,
     "playwright@claude-plugins-official": true
+  },
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAM": "1"
+  },
+  "teammateMode": "in-process",
+  "permissions": {
+    "allow": [
+      "Write(/Users/mfsd/Projects/finally/**)",
+      "Edit(/Users/mfsd/Projects/finally/**)",
+      "Bash(cd /Users/mfsd/Projects/finally*)",
+      "Bash(npx *)",
+      "Bash(npm *)",
+      "Bash(uv *)",
+      "Bash(cd *finally*)",
+      "Bash(docker *)",
+      "Bash(curl *)",
+      "Bash(sleep *)",
+      "Bash(chmod *)"
+    ]
   }
 }

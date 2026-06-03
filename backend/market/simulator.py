@@ -22,5 +22,10 @@ class SimulatorMarketData(MarketDataProvider):
     def seed_price(self, ticker: str) -> float | None:
         return self._engine.ensure_seeded(ticker)
 
+    def override_price(self, ticker: str, price: float) -> None:
+        """Seed the simulator with a real market price, replacing the hash-derived default."""
+        self._engine.ensure_seeded(ticker)
+        self._engine._price[ticker] = price
+
     async def validate_ticker(self, ticker: str) -> bool:
         return ticker.isalpha() and 1 <= len(ticker) <= 6

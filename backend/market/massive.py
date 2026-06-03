@@ -1,17 +1,19 @@
-import httpx
+import asyncio
 from collections.abc import Iterable
+
+import httpx
 
 from .base import MarketDataProvider
 
 BASE_URL = "https://api.massive.com"
-SNAPSHOT_PATH = "/v2/snapshot/locale/us/markets/stocks/tickers"
 
 
 class MassiveMarketData(MarketDataProvider):
-    """MarketDataProvider backed by the Massive (Polygon.io-compatible) REST API.
+    """Fetches previous-close prices from the Massive REST API.
 
-    Uses the filtered full-market snapshot endpoint to fetch all tracked
-    tickers in a single request, respecting free-tier rate limits.
+    Used to seed realistic starting prices for the GBM simulator when a
+    MASSIVE_API_KEY is present. The full snapshot / intraday endpoints
+    require a higher plan tier, so this provider fetches prev-close only.
     """
 
     def __init__(self, api_key: str) -> None:
@@ -31,50 +33,48 @@ class MassiveMarketData(MarketDataProvider):
             self._client = None
 
     async def get_prices(self, tickers: Iterable[str]) -> dict[str, tuple[float, float]]:
-        symbols = ",".join(sorted(set(tickers)))
+        """Fetch previous-close prices for all tickers concurrently."""
+        symbols = list(set(tickers))
         if not symbols:
             return {}
         assert self._client is not None, "call start() before get_prices()"
-        resp = await self._client.get(SNAPSHOT_PATH, params={"tickers": symbols})
-        resp.raise_for_status()
+        results = await asyncio.gather(
+            *[self._fetch_prev(sym) for sym in symbols],
+            return_exceptions=True,
+        )
         out: dict[str, tuple[float, float]] = {}
-        for row in resp.json().get("tickers", []):
-            sym = row.get("ticker")
-            price = _resolve_price(row)
-            if sym and price is not None:
-                out[sym] = (price, _resolve_ts(row))
+        for sym, result in zip(symbols, results):
+            if isinstance(result, tuple):
+                out[sym] = result
         return out
 
-    def seed_price(self, ticker: str) -> float | None:
+    async def _fetch_prev(self, ticker: str) -> tuple[float, float] | None:
+        resp = await self._client.get(f"/v2/aggs/ticker/{ticker}/prev")
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        results = data.get("results") or []
+        if not results:
+            return None
+        bar = results[0]
+        price = bar.get("c")
+        ts = bar.get("t", 0) / 1e3  # ms → seconds
+        if price and price > 0:
+            return (float(price), float(ts))
         return None
 
+    def seed_price(self, ticker: str) -> float | None:
+        return None  # async-only; seeding handled in factory
+
     async def validate_ticker(self, ticker: str) -> bool:
-        result = await self.get_prices([ticker])
-        return ticker in result
+        assert self._client is not None
+        resp = await self._client.get(f"/v2/aggs/ticker/{ticker}/prev")
+        if resp.status_code != 200:
+            return False
+        data = resp.json()
+        return bool((data.get("results") or []) and data.get("status") == "OK")
 
-
-def _resolve_price(row: dict) -> float | None:
-    """Extract the best available price from a snapshot row.
-
-    Resolution order: lastTrade.p → min.c → day.c (first present wins).
-    Returns None if no valid price is found.
-    """
-    for parent, child in (("lastTrade", "p"), ("min", "c"), ("day", "c")):
-        val = (row.get(parent) or {}).get(child)
-        if isinstance(val, (int, float)) and val > 0:
-            return float(val)
-    return None
-
-
-def _resolve_ts(row: dict) -> float:
-    """Normalize timestamp to epoch seconds.
-
-    lastTrade.t is Unix nanoseconds; min.t is Unix milliseconds.
-    """
-    lt = row.get("lastTrade") or {}
-    if "t" in lt:
-        return lt["t"] / 1e9
-    mn = row.get("min") or {}
-    if "t" in mn:
-        return mn["t"] / 1e3
-    return 0.0
+    async def fetch_seed_prices(self, tickers: list[str]) -> dict[str, float]:
+        """Fetch prev-close prices for seeding the simulator. Returns {ticker: price}."""
+        prices = await self.get_prices(tickers)
+        return {ticker: price for ticker, (price, _) in prices.items()}

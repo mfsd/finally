@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+backend/.venv/
+*.egg-info/
+.pytest_cache/
+htmlcov/
+
+# Node
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Git & IDE
+.git/
+.gitignore
+.claude/
+notes/
+
+# Runtime data
+db/finally.db
+
+# Secrets
+.env
+
+# OS
+.DS_Store
