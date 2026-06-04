@@ -43,6 +43,13 @@ class SimEngine:
             self._params[ticker] = self._derive_params(ticker)
         return self._price[ticker]
 
+    def seed_at(self, ticker: str, price: float) -> float:
+        """Seed a ticker from an external baseline price."""
+        if ticker not in self._price:
+            self._price[ticker] = price
+            self._params[ticker] = self._derive_params(ticker)
+        return self._price[ticker]
+
     def _derive_params(self, ticker: str) -> TickerParams:
         h = hashlib.sha256(ticker.encode()).digest()
 

@@ -19,17 +19,24 @@ A single Docker container on port 8000:
 - **Backend** — FastAPI (Python, `uv`)
 - **Database** — SQLite, volume-mounted, lazily initialized and seeded
 - **Real-time** — Server-Sent Events (`/api/stream/prices`)
-- **Market data** — built-in GBM simulator by default; real data via Massive API if a key is set
-- **AI** — LiteLLM → OpenRouter (`openai/gpt-oss-120b` on Cerebras), structured outputs
+- **Market data** — built-in GBM simulator by default; Massive free-plan mode seeds from real end-of-day closes and simulates intraday variation
+- **AI** — mock assistant by default for local testing; optional LiteLLM → OpenRouter (`openai/gpt-oss-120b:free`), structured outputs
 
 ## Quick Start
 
 ```bash
-cp .env.example .env    # add your OPENROUTER_API_KEY
+cp .env.example .env    # mock AI mode works out of the box
 ./scripts/start_mac.sh  # start_windows.ps1 on Windows
 ```
 
 Open http://localhost:8000. Stop with `./scripts/stop_mac.sh`.
+
+Alternatively, use Docker Compose:
+
+```bash
+docker compose up --build -d
+docker compose down
+```
 
 ## Configuration
 
@@ -37,9 +44,10 @@ Open http://localhost:8000. Stop with `./scripts/stop_mac.sh`.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `OPENROUTER_API_KEY` | yes | Enables the LLM chat assistant |
-| `MASSIVE_API_KEY` | no | Real market data; omit for the simulator |
-| `LLM_MOCK` | no | `true` for mock LLM responses (testing) |
+| `OPENROUTER_API_KEY` | no | Enables the real OpenRouter LLM assistant when `LLM_MOCK=false` |
+| `MASSIVE_API_KEY` | no | Enables Massive-backed market data; omit for the simulator |
+| `MASSIVE_MODE` | no | `free_eod` uses daily Massive closes plus simulation; `snapshot` requires paid snapshot access |
+| `LLM_MOCK` | no | `true` for mock LLM responses; recommended for local smoke tests |
 
 ## Documentation
 

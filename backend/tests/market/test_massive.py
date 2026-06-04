@@ -2,7 +2,17 @@ import json
 import pytest
 import httpx
 import respx
-from market.massive import MassiveMarketData, _resolve_price, _resolve_ts, BASE_URL, SNAPSHOT_PATH
+from market.massive import (
+    BASE_URL,
+    GROUPED_DAILY_PATH_TEMPLATE,
+    SNAPSHOT_PATH,
+    TICKER_OVERVIEW_PATH_TEMPLATE,
+    MassiveEodSimulatorMarketData,
+    MassiveMarketData,
+    _parse_grouped_daily,
+    _resolve_price,
+    _resolve_ts,
+)
 from market.base import MarketDataProvider
 
 
@@ -11,6 +21,14 @@ def make_snapshot_response(tickers_data: list[dict]) -> dict:
         "status": "OK",
         "count": len(tickers_data),
         "tickers": tickers_data,
+    }
+
+
+def make_grouped_response(rows: list[dict]) -> dict:
+    return {
+        "status": "OK",
+        "resultsCount": len(rows),
+        "results": rows,
     }
 
 
@@ -36,6 +54,12 @@ GOOGL_ROW_DAY_ONLY = {
 EMPTY_ROW = {
     "ticker": "UNKNOWN",
 }
+
+GROUPED_ROWS = [
+    {"T": "AAPL", "c": 310.26, "t": 1780516800000},
+    {"T": "MSFT", "c": 468.11, "t": 1780516800000},
+    {"T": "BAD", "c": 0, "t": 1780516800000},
+]
 
 
 # ---- _resolve_price unit tests ---------------------------------------------
@@ -89,6 +113,15 @@ class TestResolveTs:
         row = {"lastTrade": None, "min": {"c": 183.0, "t": 1605192894000}}
         ts = _resolve_ts(row)
         assert ts > 0
+
+
+class TestGroupedDailyParsing:
+    def test_parse_grouped_daily_uses_close_and_millisecond_timestamp(self):
+        parsed = _parse_grouped_daily(GROUPED_ROWS)
+
+        assert parsed["AAPL"] == (310.26, 1780516800.0)
+        assert parsed["MSFT"] == (468.11, 1780516800.0)
+        assert "BAD" not in parsed
 
 
 # ---- MassiveMarketData integration tests -----------------------------------
@@ -249,3 +282,72 @@ async def test_get_prices_deduplicates_ticker_list(provider):
         await provider.aclose()
 
     assert captured_params.count("AAPL") == 1
+
+
+# ---- MassiveEodSimulatorMarketData tests -----------------------------------
+
+
+@pytest.fixture
+def eod_provider():
+    return MassiveEodSimulatorMarketData(api_key="test-key")
+
+
+def test_eod_provider_is_market_data_provider(eod_provider):
+    assert isinstance(eod_provider, MarketDataProvider)
+
+
+@pytest.mark.asyncio
+async def test_eod_get_prices_uses_grouped_daily_summary(eod_provider):
+    grouped_path = GROUPED_DAILY_PATH_TEMPLATE.format(date="2026-06-03")
+    with respx.mock(base_url=BASE_URL) as mock:
+        mock.get(grouped_path).mock(
+            return_value=httpx.Response(200, json=make_grouped_response(GROUPED_ROWS))
+        )
+        await eod_provider.start()
+        prices = await eod_provider.get_prices(["AAPL", "MSFT"])
+        await eod_provider.aclose()
+
+    assert set(prices) == {"AAPL", "MSFT"}
+    assert abs(prices["AAPL"][0] - 310.26) < 2.0
+    assert prices["AAPL"][1] == 1780516800.0
+
+
+@pytest.mark.asyncio
+async def test_eod_get_prices_caches_grouped_daily_summary(eod_provider):
+    grouped_path = GROUPED_DAILY_PATH_TEMPLATE.format(date="2026-06-03")
+    with respx.mock(base_url=BASE_URL) as mock:
+        route = mock.get(grouped_path).mock(
+            return_value=httpx.Response(200, json=make_grouped_response(GROUPED_ROWS))
+        )
+        await eod_provider.start()
+        await eod_provider.get_prices(["AAPL"])
+        await eod_provider.get_prices(["MSFT"])
+        await eod_provider.aclose()
+
+    assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_eod_validate_ticker_uses_reference_overview(eod_provider):
+    path = TICKER_OVERVIEW_PATH_TEMPLATE.format(ticker="AAPL")
+    with respx.mock(base_url=BASE_URL) as mock:
+        mock.get(path).mock(
+            return_value=httpx.Response(200, json={"status": "OK", "results": {"ticker": "AAPL", "active": True}})
+        )
+        await eod_provider.start()
+        result = await eod_provider.validate_ticker("AAPL")
+        await eod_provider.aclose()
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_eod_validate_ticker_returns_false_for_404(eod_provider):
+    path = TICKER_OVERVIEW_PATH_TEMPLATE.format(ticker="NOPE")
+    with respx.mock(base_url=BASE_URL) as mock:
+        mock.get(path).mock(return_value=httpx.Response(404, json={"status": "NOT_FOUND"}))
+        await eod_provider.start()
+        result = await eod_provider.validate_ticker("NOPE")
+        await eod_provider.aclose()
+
+    assert result is False

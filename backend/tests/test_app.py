@@ -18,6 +18,9 @@ from starlette.testclient import TestClient
 import httpx
 
 from market.cache import PriceCache
+from market.fallback import FallbackMarketData
+from market.massive import MassiveMarketData
+from market.simulator import SimulatorMarketData
 from routes.health import router as health_router
 
 
@@ -79,7 +82,60 @@ def test_health_returns_200(client):
 
 def test_health_returns_ok_status(client):
     resp = client.get("/api/health")
-    assert resp.json() == {"status": "ok"}
+    assert resp.json()["status"] == "ok"
+
+
+def test_health_reports_unknown_market_data_when_provider_missing(client):
+    resp = client.get("/api/health")
+    market_data = resp.json()["market_data"]
+    assert market_data["source"] == "unknown"
+    assert market_data["mode"] == "unknown"
+    assert market_data["label"] == "Unknown"
+    assert "not known" in market_data["description"]
+
+
+def test_health_reports_simulator_market_data(seeded_cache):
+    app = make_test_app(seeded_cache)
+    app.state.market_provider = SimulatorMarketData()
+    with TestClient(app) as client:
+        resp = client.get("/api/health")
+    market_data = resp.json()["market_data"]
+    assert market_data["source"] == "simulator"
+    assert market_data["mode"] == "primary"
+    assert market_data["label"] == "Simulator"
+    assert "simulator" in market_data["description"]
+
+
+def test_health_reports_massive_market_data_before_fallback(seeded_cache):
+    app = make_test_app(seeded_cache)
+    app.state.market_provider = FallbackMarketData(MassiveMarketData("key"), SimulatorMarketData())
+    with TestClient(app) as client:
+        resp = client.get("/api/health")
+    market_data = resp.json()["market_data"]
+    assert market_data["source"] == "massive"
+    assert market_data["mode"] == "snapshot"
+    assert market_data["label"] == "Massive snapshot"
+    assert "snapshots" in market_data["description"]
+
+
+@pytest.mark.asyncio
+async def test_health_reports_simulator_market_data_after_fallback(seeded_cache):
+    class BrokenProvider(MassiveMarketData):
+        async def get_prices(self, tickers):
+            raise RuntimeError("forbidden")
+
+    provider = FallbackMarketData(BrokenProvider("key"), SimulatorMarketData())
+    await provider.get_prices({"AAPL"})
+
+    app = make_test_app(seeded_cache)
+    app.state.market_provider = provider
+    with TestClient(app) as client:
+        resp = client.get("/api/health")
+    market_data = resp.json()["market_data"]
+    assert market_data["source"] == "simulator"
+    assert market_data["mode"] == "fallback"
+    assert market_data["label"] == "Simulator fallback"
+    assert "fully simulated" in market_data["description"]
 
 
 # ---- SSE: finite stream (all assertions using GET on a finite generator) ----

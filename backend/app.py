@@ -9,8 +9,11 @@ from market.cache import PriceCache
 from market.factory import make_provider
 from market.poller import MarketPoller
 from market.tracked import get_tracked_symbols
+from routes.chat import router as chat_router
 from routes.health import router as health_router
+from routes.portfolio import router as portfolio_router
 from routes.stream import router as stream_router
+from routes.watchlist import router as watchlist_router
 
 
 @asynccontextmanager
@@ -44,8 +47,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="FinAlly — AI Trading Workstation", lifespan=lifespan)
 
+app.include_router(chat_router)
 app.include_router(health_router)
 app.include_router(stream_router)
+app.include_router(watchlist_router)
+app.include_router(portfolio_router)
 
 # Serve the Next.js static export (built in the Docker multi-stage build).
 _static = os.path.join(os.path.dirname(__file__), "static")

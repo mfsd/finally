@@ -1,0 +1,17 @@
+services:
+  finally:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: finally:latest
+    container_name: finally-app
+    environment:
+      DB_PATH: /app/db/finally.db
+      LLM_MOCK: ${LLM_MOCK:-true}
+      MASSIVE_API_KEY: ${MASSIVE_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    ports:
+      - "${FINALLY_PORT:-8000}:8000"
+    volumes:
+      - ./db:/app/db
+    restart: unless-stopped

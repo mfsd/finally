@@ -1,0 +1,27 @@
+services:
+  web:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      LLM_MOCK: "true"
+      MASSIVE_API_KEY: ""
+      OPENROUTER_API_KEY: "test-key-unused-with-llm-mock"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.60.0-noble
+    working_dir: /work/test
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      APP_BASE_URL: http://web:8000
+      CI: "true"
+    volumes:
+      - ..:/work
+    command: ["sh", "-lc", "if [ -f package-lock.json ]; then npm ci; else npm install; fi && npx playwright test"]

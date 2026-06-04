@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+  margin: 0;
+  background: #0d1117;
+  color: #d6deeb;
+}
+
+body {
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+@keyframes flash-up {
+  0% {
+    background-color: rgba(34, 197, 94, 0.32);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+@keyframes flash-down {
+  0% {
+    background-color: rgba(239, 68, 68, 0.32);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.flash-up {
+  animation: flash-up 520ms ease-out;
+}
+
+.flash-down {
+  animation: flash-down 520ms ease-out;
+}
+
+.terminal-scrollbar {
+  scrollbar-color: #374151 #111827;
+  scrollbar-width: thin;
+}
